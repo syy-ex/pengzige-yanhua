@@ -20,14 +20,35 @@
       height: 100%;
       background: transparent;
     }
+    .audio-hint {
+      position: fixed;
+      left: 50%;
+      top: 50%;
+      transform: translate(-50%, -50%);
+      padding: 10px 16px;
+      border-radius: 999px;
+      background: rgba(8, 10, 18, 0.68);
+      color: #fff;
+      font-size: 16px;
+      letter-spacing: 0.08em;
+      user-select: none;
+      z-index: 2;
+      pointer-events: auto;
+      backdrop-filter: blur(6px);
+    }
+    .audio-hint[hidden] {
+      display: none;
+    }
   </style>
 </head>
 <body>
   <canvas id="c"></canvas>
+  <div id="audio-hint" class="audio-hint" hidden>点击开启音乐</div>
 
   <script>
     (() => {
       const canvas = document.getElementById('c');
+      const audioHint = document.getElementById('audio-hint');
       const ctx = canvas.getContext('2d');
 
       let W = 0, H = 0;
@@ -60,7 +81,6 @@
       let greeted = false;
       let fireworksStarted = false;
       let songStarted = false;
-      let songUnlocked = false;
 
       function ensureAudio() {
         const Ctx = window.AudioContext || window.webkitAudioContext;
@@ -104,22 +124,12 @@
         });
       }
 
-      function unlockSong() {
-        if (songUnlocked) return;
-        songUnlocked = true;
-        song.muted = true;
-        const playPromise = song.play();
-        if (playPromise && typeof playPromise.then === 'function') {
-          playPromise.then(() => {
-            song.pause();
-            song.currentTime = 0;
-            song.muted = false;
-          }).catch(() => {
-            song.muted = false;
-          });
-        } else {
-          song.muted = false;
-        }
+      function showAudioHint() {
+        if (audioHint) audioHint.hidden = false;
+      }
+
+      function hideAudioHint() {
+        if (audioHint) audioHint.hidden = true;
       }
 
       function speakGreeting(onDone) {
@@ -175,6 +185,7 @@
         greeted = true;
         const ctx = ensureAudio();
         if (ctx) playGreetingChime(ctx);
+        startSong();
         speakGreeting(startFireworks);
       }
 
@@ -182,27 +193,35 @@
         if (songStarted) return;
         songStarted = true;
         song.currentTime = 0;
-        song.muted = false;
-        if (song.readyState < 3) {
-          song.addEventListener('canplaythrough', () => {
-            if (!songStarted) return;
-            const playPromise = song.play();
-            if (playPromise && typeof playPromise.catch === 'function') {
-              playPromise.catch(() => {});
-            }
-          }, { once: true });
+        song.muted = true;
+
+        const attemptPlay = () => {
+          const playPromise = song.play();
+          if (playPromise && typeof playPromise.then === 'function') {
+            playPromise.then(() => {
+              song.muted = false;
+              hideAudioHint();
+            }).catch(() => {
+              songStarted = false;
+              showAudioHint();
+            });
+          } else {
+            song.muted = false;
+            hideAudioHint();
+          }
+        };
+
+        if (song.readyState < 2) {
+          song.addEventListener('canplay', attemptPlay, { once: true });
           song.load();
-        }
-        const playPromise = song.play();
-        if (playPromise && typeof playPromise.catch === 'function') {
-          playPromise.catch(() => {});
+        } else {
+          attemptPlay();
         }
       }
 
       function startFireworks() {
         if (fireworksStarted) return;
         fireworksStarted = true;
-        startSong();
         t = 0;
         launch();
         if (Math.random() < 0.2) launch(rand(W * 0.1, W * 0.9), rand(H * 0.12, H * 0.35));
@@ -353,7 +372,11 @@
         }
       }
 
-      unlockSong();
+      if (audioHint) {
+        audioHint.addEventListener('click', () => {
+          startSong();
+        });
+      }
       setTimeout(playGreeting, GREETING_DELAY);
       frame();
     })();
