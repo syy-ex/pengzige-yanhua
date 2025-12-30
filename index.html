@@ -1,0 +1,362 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Fireworks Overlay</title>
+  <style>
+    html, body {
+      margin: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+    }
+    body {
+      background: #0b0d16 url('background.jpg') center / cover no-repeat;
+    }
+    canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+      background: transparent;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="c"></canvas>
+
+  <script>
+    (() => {
+      const canvas = document.getElementById('c');
+      const ctx = canvas.getContext('2d');
+
+      let W = 0, H = 0;
+      const DPR = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+
+      function resize() {
+        W = window.innerWidth;
+        H = window.innerHeight;
+        canvas.width = Math.floor(W * DPR);
+        canvas.height = Math.floor(H * DPR);
+        ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+      }
+      window.addEventListener('resize', resize);
+      resize();
+
+      const rand = (a, b) => a + Math.random() * (b - a);
+      const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
+
+      const SOUND_VOLUME = 0.22;
+      const SONG_SRC = 'song.mp3';
+      const SONG_VOLUME = 0.55;
+      const GREETING_TEXT = '二零二六年新年快乐';
+      const GREETING_DELAY = 3000;
+      const audio = { ctx: null, master: null, noise: null };
+      const song = new Audio(SONG_SRC);
+      song.preload = 'auto';
+      song.loop = true;
+      song.volume = SONG_VOLUME;
+      song.load();
+      let greeted = false;
+      let fireworksStarted = false;
+      let songStarted = false;
+      let songUnlocked = false;
+
+      function ensureAudio() {
+        const Ctx = window.AudioContext || window.webkitAudioContext;
+        if (!Ctx) return null;
+        if (!audio.ctx) {
+          audio.ctx = new Ctx();
+          audio.master = audio.ctx.createGain();
+          audio.master.gain.value = SOUND_VOLUME;
+          audio.master.connect(audio.ctx.destination);
+        }
+        if (audio.ctx.state === 'suspended') audio.ctx.resume();
+        return audio.ctx;
+      }
+
+      function getNoiseBuffer(ctx) {
+        if (audio.noise && audio.noise.sampleRate === ctx.sampleRate) return audio.noise;
+        const length = Math.floor(ctx.sampleRate * 0.7);
+        const buffer = ctx.createBuffer(1, length, ctx.sampleRate);
+        const data = buffer.getChannelData(0);
+        for (let i = 0; i < length; i++) data[i] = Math.random() * 2 - 1;
+        audio.noise = buffer;
+        return buffer;
+      }
+
+      function playGreetingChime(ctx) {
+        const now = ctx.currentTime + 0.03;
+        const notes = [523.25, 659.25, 783.99, 1046.5];
+        notes.forEach((freq, i) => {
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          const start = now + i * 0.08;
+          osc.type = 'sine';
+          osc.frequency.value = freq;
+          gain.gain.setValueAtTime(0.0001, start);
+          gain.gain.exponentialRampToValueAtTime(0.18, start + 0.02);
+          gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.35);
+          osc.connect(gain);
+          gain.connect(audio.master);
+          osc.start(start);
+          osc.stop(start + 0.4);
+        });
+      }
+
+      function unlockSong() {
+        if (songUnlocked) return;
+        songUnlocked = true;
+        song.muted = true;
+        const playPromise = song.play();
+        if (playPromise && typeof playPromise.then === 'function') {
+          playPromise.then(() => {
+            song.pause();
+            song.currentTime = 0;
+            song.muted = false;
+          }).catch(() => {
+            song.muted = false;
+          });
+        } else {
+          song.muted = false;
+        }
+      }
+
+      function speakGreeting(onDone) {
+        if (!('speechSynthesis' in window)) {
+          if (onDone) onDone();
+          return;
+        }
+        const utter = new SpeechSynthesisUtterance(GREETING_TEXT);
+        utter.lang = 'zh-CN';
+        utter.rate = 0.95;
+        utter.pitch = 1;
+        utter.volume = 0.95;
+
+        let spoken = false;
+        let finished = false;
+        let fallbackTimer = null;
+
+        const finish = () => {
+          if (finished) return;
+          finished = true;
+          if (fallbackTimer) clearTimeout(fallbackTimer);
+          if (onDone) onDone();
+        };
+
+        utter.onend = finish;
+        utter.onerror = finish;
+
+        const trySpeak = () => {
+          if (spoken) return;
+          spoken = true;
+          const voices = speechSynthesis.getVoices();
+          const zhVoice = voices.find(v => (v.lang || '').toLowerCase().startsWith('zh-cn'))
+            || voices.find(v => (v.lang || '').toLowerCase().startsWith('zh'));
+          if (zhVoice) utter.voice = zhVoice;
+          speechSynthesis.speak(utter);
+          fallbackTimer = setTimeout(finish, 6000);
+        };
+
+        if (speechSynthesis.getVoices().length === 0) {
+          const onVoices = () => {
+            speechSynthesis.removeEventListener('voiceschanged', onVoices);
+            trySpeak();
+          };
+          speechSynthesis.addEventListener('voiceschanged', onVoices);
+          setTimeout(trySpeak, 500);
+        } else {
+          trySpeak();
+        }
+      }
+
+      function playGreeting() {
+        if (greeted) return;
+        greeted = true;
+        const ctx = ensureAudio();
+        if (ctx) playGreetingChime(ctx);
+        speakGreeting(startFireworks);
+      }
+
+      function startSong() {
+        if (songStarted) return;
+        songStarted = true;
+        song.currentTime = 0;
+        song.muted = false;
+        if (song.readyState < 3) {
+          song.addEventListener('canplaythrough', () => {
+            if (!songStarted) return;
+            const playPromise = song.play();
+            if (playPromise && typeof playPromise.catch === 'function') {
+              playPromise.catch(() => {});
+            }
+          }, { once: true });
+          song.load();
+        }
+        const playPromise = song.play();
+        if (playPromise && typeof playPromise.catch === 'function') {
+          playPromise.catch(() => {});
+        }
+      }
+
+      function startFireworks() {
+        if (fireworksStarted) return;
+        fireworksStarted = true;
+        startSong();
+        t = 0;
+        launch();
+        if (Math.random() < 0.2) launch(rand(W * 0.1, W * 0.9), rand(H * 0.12, H * 0.35));
+      }
+
+      function playExplosion(x, intensity) {
+        const ctx = ensureAudio();
+        if (!ctx) return;
+        const now = ctx.currentTime;
+        const level = clamp(intensity == null ? 1 : intensity, 0.4, 1.2);
+
+        let output = audio.master;
+        if (ctx.createStereoPanner) {
+          const pan = ctx.createStereoPanner();
+          pan.pan.value = clamp((x / W) * 2 - 1, -1, 1);
+          pan.connect(audio.master);
+          output = pan;
+        }
+
+        const noise = ctx.createBufferSource();
+        noise.buffer = getNoiseBuffer(ctx);
+        noise.playbackRate.value = rand(0.85, 1.15);
+        const noiseFilter = ctx.createBiquadFilter();
+        noiseFilter.type = 'lowpass';
+        noiseFilter.frequency.value = rand(700, 1200);
+        noiseFilter.Q.value = 0.4;
+        const noiseGain = ctx.createGain();
+        noiseGain.gain.setValueAtTime(0.0001, now);
+        noiseGain.gain.exponentialRampToValueAtTime(0.32 * level, now + 0.015);
+        noiseGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.55);
+
+        noise.connect(noiseFilter);
+        noiseFilter.connect(noiseGain);
+        noiseGain.connect(output);
+
+        const boom = ctx.createOscillator();
+        boom.type = 'sine';
+        const boomGain = ctx.createGain();
+        boom.frequency.setValueAtTime(rand(70, 95), now);
+        boom.frequency.exponentialRampToValueAtTime(rand(38, 52), now + 0.45);
+        boomGain.gain.setValueAtTime(0.0001, now);
+        boomGain.gain.exponentialRampToValueAtTime(0.22 * level, now + 0.02);
+        boomGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.5);
+
+        boom.connect(boomGain);
+        boomGain.connect(output);
+
+        noise.start(now);
+        noise.stop(now + 0.6);
+        boom.start(now);
+        boom.stop(now + 0.55);
+      }
+
+      const rockets = [];
+      const particles = [];
+
+      // 透明背景“淡出”：用 destination-out 擦除上一帧，保持透明不变暗
+      function fade() {
+        ctx.globalCompositeOperation = 'destination-out';
+        ctx.fillStyle = 'rgba(0,0,0,0.14)'; // 数值越大，拖影越短
+        ctx.fillRect(0, 0, W, H);
+      }
+
+      function launch(x = rand(W * 0.15, W * 0.85), yTarget = rand(H * 0.18, H * 0.45)) {
+        const hue = rand(0, 360);
+        rockets.push({
+          x, y: H + 12,
+          vx: rand(-1.1, 1.1),
+          vy: rand(-10.5, -13.5),
+          hue, yTarget
+        });
+      }
+
+      function explode(x, y, hue) {
+        const n = Math.floor(rand(70, 130));
+        playExplosion(x, n / 110);
+        const base = rand(2.2, 5.0);
+        for (let i = 0; i < n; i++) {
+          const a = Math.PI * 2 * (i / n) + rand(-0.05, 0.05);
+          const sp = base * rand(0.55, 1.2);
+          particles.push({
+            x, y,
+            vx: Math.cos(a) * sp + rand(-0.35, 0.35),
+            vy: Math.sin(a) * sp + rand(-0.35, 0.35),
+            life: rand(55, 95),
+            age: 0,
+            hue: hue + rand(-12, 12),
+            bright: rand(55, 75),
+            size: rand(1.2, 2.4),
+            drag: rand(0.985, 0.992)
+          });
+        }
+      }
+
+      let t = 0;
+      function frame() {
+        requestAnimationFrame(frame);
+        t++;
+
+        fade();
+
+        // 自动烟花频率
+        if (fireworksStarted && t % Math.floor(rand(18, 34)) === 0) {
+          launch();
+          if (Math.random() < 0.16) launch(rand(W * 0.1, W * 0.9), rand(H * 0.12, H * 0.35));
+        }
+
+        // 火箭
+        ctx.globalCompositeOperation = 'lighter';
+        for (let i = rockets.length - 1; i >= 0; i--) {
+          const r = rockets[i];
+          r.x += r.vx;
+          r.y += r.vy;
+          r.vy += 0.12;
+          r.vx *= 0.995;
+
+          ctx.beginPath();
+          ctx.fillStyle = `hsla(${r.hue},100%,65%,0.95)`;
+          ctx.arc(r.x, r.y, 2.0, 0, Math.PI * 2);
+          ctx.fill();
+
+          if (r.y <= r.yTarget || r.vy >= -2.5) {
+            explode(r.x, r.y, r.hue);
+            rockets.splice(i, 1);
+          }
+        }
+
+        // 粒子
+        for (let i = particles.length - 1; i >= 0; i--) {
+          const p = particles[i];
+          p.age++;
+          p.vx *= p.drag;
+          p.vy *= p.drag;
+          p.vy += 0.08;
+          p.x += p.vx;
+          p.y += p.vy;
+
+          const k = 1 - (p.age / p.life);
+          const alpha = clamp(k, 0, 1);
+          const size = p.size * (0.6 + 0.85 * alpha);
+
+          ctx.beginPath();
+          ctx.fillStyle = `hsla(${p.hue},100%,${p.bright}%,${alpha})`;
+          ctx.arc(p.x, p.y, size, 0, Math.PI * 2);
+          ctx.fill();
+
+          if (p.age >= p.life || p.y > H + 60) particles.splice(i, 1);
+        }
+      }
+
+      unlockSong();
+      setTimeout(playGreeting, GREETING_DELAY);
+      frame();
+    })();
+  </script>
+</body>
+</html>
